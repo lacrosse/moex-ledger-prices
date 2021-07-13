@@ -1,0 +1,10 @@
+currency_specs:
+  USD:
+    secid: USD000UTSTOM
+    commodity: RUB
+
+bonds:
+  - RU000A1015P6RU000A101WJ7
+
+etfs:
+  - FXIT

@@ -1,0 +1,99 @@
+#!/usr/bin/env ruby
+
+require 'uri'
+require 'net/http'
+require 'json'
+require 'yaml'
+require 'time'
+
+CONFIG = YAML.load_file(File.join(__dir__, 'config.yml'))
+
+module MoexPrices
+  class Market
+    def initialize(engine_id, market_id)
+      @engine_id = engine_id
+      @market_id = market_id
+    end
+
+    def data
+      @_data ||= get_data
+    end
+
+    def find(secid, boardid)
+      columns = data['marketdata']['columns']
+      security_boards = data['marketdata']['data'].map { columns.zip(_1).to_h }
+      Security.new(security_boards.find { _1['SECID'] == secid && _1['BOARDID'] == boardid })
+    end
+
+    private
+
+    def get_data
+      "https://iss.moex.com/iss/engines/#{@engine_id}/markets/#{@market_id}/securities.json"
+        .then { URI(_1) }
+        .then { Net::HTTP.get(_1) }
+        .then { JSON.parse(_1) }
+    end
+  end
+
+  class Security
+    def initialize(attrs)
+      @attrs = attrs
+    end
+
+    def price
+      %w[LAST MARKETPRICE LCURRENTPRICE ADMITTEDQUOTE].lazy.map { @attrs[_1] }.find { !_1.nil? }
+    end
+
+    def msk_systime
+      Time.parse(@attrs['SYSTIME'])
+    end
+
+    def date
+      (msk_systime - 600).strftime("%F")
+    end
+
+    def ledger_string(face_unit, commodity, factor = 1)
+      "P #{date} #{ledger_escape(face_unit)} #{price * factor} #{ledger_escape(commodity)}"
+    end
+
+    private
+
+    def ledger_escape(str)
+      str[/\d/] ? "\"#{str}\"" : str
+    end
+  end
+end
+
+symbols = ARGV.map(&:upcase).uniq.sort
+
+bonds = symbols & CONFIG['bonds']
+symbols -= CONFIG['bonds']
+currencies = symbols & CONFIG['currency_specs'].keys
+symbols -= CONFIG['currency_specs'].keys
+etfs = symbols & CONFIG['etfs']
+stocks = symbols - CONFIG['etfs']
+
+currency_market = MoexPrices::Market.new('currency', 'selt')
+stock_market = MoexPrices::Market.new('stock', 'shares')
+bond_market = MoexPrices::Market.new('stock', 'bonds')
+
+currencies.map do
+  spec = CONFIG['currency_specs'][_1]
+  sec = currency_market.find(spec['secid'], 'CETS')
+  puts sec.ledger_string(_1, spec['commodity'])
+end
+
+etfs.map do
+  sec = stock_market.find(_1, 'TQTF')
+  puts sec.ledger_string(_1, 'RUB')
+end
+
+stocks.map do
+  sec = stock_market.find(_1, 'TQBR')
+  puts sec.ledger_string(_1, 'RUB')
+end
+
+bonds.map do
+  sec = bond_market.find(_1, 'TQCB')
+  puts sec.ledger_string(_1, 'RUB', 10)
+end
